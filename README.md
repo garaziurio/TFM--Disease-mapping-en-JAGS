@@ -8,7 +8,7 @@ Los datos y las cartrografias utilizadas para el caso práctico están en la car
 
 ## Código
 
-El código es el documento `CODIGO TFM.rmd´ y se puede ejecutar en orden. Para ejecutar los modelos del código es necesario tener descargada, además de R, los software \texttt{JAGS} y \texttt{WinBUGS}. Además, se debe tener en cuenta que cada uno de los modelos tarda unos 5-7 minutos en ejecutar.
+El código es el documento `CODIGO TFM.rmd´ y se puede ejecutar en orden. Para ejecutar los modelos del código es necesario tener descargada, además de R, los software JAGS y WinBUGS. Además, se debe tener en cuenta que cada uno de los modelos tarda unos 5-7 minutos en ejecutar.
 
 ## Versión de R y paquetes empleados
 
