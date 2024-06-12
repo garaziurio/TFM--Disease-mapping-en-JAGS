@@ -1,0 +1,1326 @@
+---
+title: "CODIGO TFM"
+author: "GARAZI URIO"
+date: ""
+output: pdf_document
+latex_engine: xelatex
+geometry: 
+- left=3cm 
+- right=3cm 
+- top=2.5cm 
+- bottom=2.5cm
+fontsize: 12pt
+linestretch: 1.2
+lang: es-ES
+header-includes:
+  - \usepackage{url}
+  - \usepackage{color}
+  - \usepackage{caption}
+  - \usepackage{hyperref}
+  - \usepackage{xcolor}
+  - \usepackage{amsmath}
+  - \usepackage{amssymb} 
+  - \usepackage{graphicx}
+  - \usepackage{subcaption}
+  - \usepackage{setspace}
+  - \usepackage{float}
+  - \usepackage{adjustbox}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=FALSE, comment = NULL, warning = FALSE, error = FALSE, message = FALSE, fig.align = "center")
+```
+
+# 1. LIBRERIAS
+
+```{r}
+#librerias necesarias
+rm(list=ls())
+# librerias necesarias
+library(SpatialEpi)
+library(sp)
+library(spdep)
+library(leaflet)
+library(R2WinBUGS)
+library(dplyr)
+library(jagsUI)
+library(RColorBrewer)
+library(xtable)
+```
+
+```{r}
+# directorio winbugs Garazi
+# directorio.winbugs<-"c:/Users/garaz/Documents/WinBUGS14/"
+```
+
+# 2. ABRIR Y TRANSOFRMAR DATOS ESCOCIA, ARAGON Y MEDEA
+
+```{r,results = 'hide'}
+# datos ESCOCIA
+data(scotland)
+mapes <- scotland$spatial.polygon
+# datos ARAGON
+load("./datos/Aragon.Rdata")
+datar<- Aragon.df
+mapar<- sf::st_read("datos/aragon.shp")
+# datos MEDEA
+load("./datos/DatosIsquemicasMedea.Rdata")
+datam <- as.data.frame(cbind(E=Exp,O=Obs))
+medeamap <- carto
+rm(list=c("carto.nb","carto.wb","carto","Exp", "Obs"))
+```
+
+```{r}
+# transformamos datos ESCOCIA
+dataes<-scotland$data
+dataes$SIR <- dataes$cases / dataes$expected
+rownames(dataes) <- dataes$county.names
+mapes <- SpatialPolygonsDataFrame(mapes, dataes, match.ID = TRUE)
+nb2es <- poly2nb(mapes)
+
+
+#transformamos datos ARAGON
+polyar <- as(mapar,"Spatial")
+new_IDs = paste0(polyar@data$NOMBRE)
+for (i in 1:length(slot(polyar, "polygons"))){
+    slot(slot(polyar, "polygons")[[i]], "ID") = new_IDs[i]
+}
+polyar <- polyar[order(polyar@data$CODMUNI), ]
+datar$SIR <- datar$O/datar$E
+rownames(datar) <-polyar@data$NOMBRE
+maparg <- SpatialPolygonsDataFrame(polyar, datar, match.ID  = TRUE)
+nb2ar<- spdep :: poly2nb (maparg)
+
+
+# transformamos datos MEDEA
+nb2me <-poly2nb(medeamap)
+```
+
+# **3. MODELOS BYM (FULL), PAR W Y PAR J**
+
+### Modelo BYM (FULL) en WINBUGS
+
+```{r}
+#modelo BYM
+modeloBYM<-function(){
+  for(i in 1:n){
+    O[i]~dpois(mu[i])
+    log(mu[i])<-log(E[i])+m+sdhet*het[i]+sdsp*sp[i]
+    het[i]~dnorm(0,1)
+    R[i]<-exp(m+sdhet*het[i]+sdsp*sp[i])
+  }
+  
+  mean.sp<-mean(sp[])
+  cero~dnorm(mean.sp,100)
+  
+  for(i in 1:n){
+    sp[i] ~ dnorm(meancar[i], preccar[i])
+    preccar[i] <- num[i]
+    meancar[i] <- mean(spadj[(index[i]+1): index[i+1]])
+  }
+  
+  for(i in 1:nadj){
+    spadj[i]<- sp[adj[i]]
+  }
+  
+  m~dflat()
+  sdhet ~ dunif(0,10); sdsp ~ dunif(0,10)
+}
+
+parametros<-c("R","m","sdhet","sdsp","sp")
+```
+
+### Modelo PAR en WINBUGS
+
+```{r}
+#modelo PAR WinBUGS
+modeloNuestro<-function(){
+  for(i in 1:n){
+    O[i]~dpois(mu[i])
+    log(mu[i])<-log(E[i])+m+sdhet*het[i]+sdsp*sp[i]
+    het[i]~dnorm(0,1)
+    R[i]<-exp(m+sdhet*het[i]+sdsp*sp[i])
+  }
+  
+  mean.sp<-mean(sp[])
+  
+  cero~dnorm(mean.sp,100)
+  
+  for(i in 1:n){
+    sp[i] ~ dnorm(meancar[i], preccar[i])
+    preccar[i] <- num[i]
+    meancar[i] <- mean(spadj[(index[i]+1): index[i+1]])
+  }
+  
+  for(i in 1:nadj){
+    spadj[i]<- sp[adj[i]]
+  }
+  
+  m~dflat()
+  sdhet ~ dunif(0,10); sdsp ~ dunif(0,10)
+}
+
+parametros<-c("R","m","sdhet","sdsp","sp")
+```
+
+### Modelo PAR en JAGS
+
+```{r}
+#modelo PAR JAGS
+cat(file="ModeloNuestro_jags.txt", "model{
+  for (i in 1:n) {
+    O[i] ~ dpois(mu[i])
+    log(mu[i]) <- log(E[i]) + m + sdhet * het[i] + sdsp * sp[i]
+    het[i] ~ dnorm(0, 1)
+    R[i] <- exp(m + sdhet * het[i] + sdsp * sp[i])
+  }
+   for (i in 1:nadj) {
+    spadj[i] <- sp[adj[i]]
+   }
+   for (i in 1:(n-1)) {
+    sp[i] ~ dnorm(meancar[i], preccar[i])
+    preccar[i] <- num[i]
+    meancar[i] <- mean(spadj[(index[i] + 1):index[i + 1]])
+   }
+  
+   sp[n]~dnorm(0,0.0001)
+   
+   cero~dnorm(mean.sp,10000)
+   mean.sp<-mean(sp[])
+  
+  m ~ dunif(-10, 10)
+  sdhet ~ dunif(0, 10)
+  sdsp ~ dunif(0, 10)
+}")
+
+parametros<-c("R","m","sdhet","sdsp","sp")
+```
+
+# 4. DATOS ESCOCIA
+
+### Unir islas en mapa y datos
+
+```{r}
+#Establecemos los vecinos de las islas para el orden
+
+#ORKNEY- CAITHNESS
+nb2es[[6]]<-as.integer(3)
+nb2es[[3]]<-sort(c(nb2es[[3]],as.integer(6)))
+#shetland-orkney
+nb2es[[6]]<-sort(c(nb2es[[6]],as.integer(8)))
+nb2es[[8]]<-as.integer(6)
+#western.isles-skye
+nb2es[[1]]<-sort(c(nb2es[[1]],as.integer(11)))
+nb2es[[11]]<-as.integer(1) 
+```
+
+### Ordenacion con semilla 50
+
+```{r}
+set.seed(50)
+border<-sample(1:(dim(dataes)[1]),1)
+orden<-border
+newborder<-0
+while(!is.null(newborder)){
+newborder<-sort(unique(
+  unlist(sapply(border,function(x){nb2es[[x]]}))))
+newborder<-newborder[!(newborder%in%orden)]
+orden<-c(orden,newborder)
+border<-newborder
+}
+
+mapes.orden <- mapes[rev(orden), ]
+nbes.orden<-spdep::poly2nb(mapes.orden)
+```
+
+```{r}
+# Volvemos a establecer quien es vecino de quien en el mapa.
+
+#orkney-caithness
+nbes.orden[[2]]<-as.integer(3)
+nbes.orden[[3]]<-sort(c(nbes.orden[[3]],as.integer(2)))
+#shetland-orkney
+nbes.orden[[2]]<-sort(c(nbes.orden[[2]],as.integer(1)))
+nbes.orden[[1]]<-as.integer(2)
+#western.isles-skye
+nbes.orden[[13]]<-sort(c(nbes.orden[[13]],as.integer(5)))
+nbes.orden[[5]]<-as.integer(13) 
+```
+
+```{r}
+# Función para obtener vecinos de orden superior
+vsup <- function(nbobj) {
+  vsuplista <- list()
+  for (i in 1:length(nbobj)) {
+    v <- as.vector(nbobj[[i]])
+    vs <- v[v > i]
+    vsuplista[[i]] <- vs
+  }
+  
+  return(vsuplista)
+}
+```
+
+```{r}
+nbes.orden.asc<- vsup(nbes.orden)
+nbes.orden.asc[[56]]<-as.integer(56)
+```
+
+```{r}
+# vectores necesarios para el modelo
+
+#modelo FULL
+numBYMes<-sapply(nbes.orden,length) 
+adjBYMes<-unlist(nbes.orden) 
+indexBYMes <- cumsum(sapply(nbes.orden, length)) 
+indexpBYMes <- c(0, unique(indexBYMes))
+
+#modelo PAR
+num.asc.es<-sapply(nbes.orden.asc,length) 
+num.asc.es[num.asc.es==0]<-0.001 
+adj.asc.es<-unlist(nbes.orden.asc) 
+index.asc.es <- cumsum(sapply(nbes.orden.asc, length)) 
+indexp.asc.es <- c(0, unique(index.asc.es))
+```
+
+```{r}
+data.orden.es <-
+  dataes[match(mapes.orden@data$county.names,rownames(dataes)),]
+```
+
+## 4.1 MODELOS en ESCOCIA 
+### FULL en Winbugs
+
+```{r,eval=FALSE}
+datos.es <-
+  list(O=data.orden.es$cases,E=data.orden.es$expected,
+       n=dim(dataes)[1], adj=adjBYMes, 
+       nadj=length(adjBYMes),index=indexpBYMes,
+       num=numBYMes,cero=0)
+
+inicial.es <- function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(dataes)[1],0,1),
+       sp=rnorm(dim(dataes)[1],0,1),
+       sdsp=runif(1), sdhet=runif(1)
+  )
+}
+```
+
+```{r,eval=FALSE}
+set.seed(1)
+ResulBYM50.es1<-bugs(data=datos.es,inits=inicial.es,
+                      parameters=parametros,model=modeloBYM,
+               n.iter=10000,n.burnin=1000,n.thin=1,
+               DIC=FALSE,bugs.directory=directorio.winbugs)
+
+save(ResulBYM50.es1, file="ResulBYM50.es1.Rdata")
+```
+
+### PAR en Winbugs
+
+```{r,eval=FALSE}
+datos.es.asc<-
+  list(O=data.orden.es$cases, E=data.orden.es$expected,
+       n=dim(data.orden.es)[1], adj=adj.asc.es, 
+       nadj=length(adj.asc.es), index=indexp.asc.es,
+       num=num.asc.es,cero=0)
+```
+
+```{r,eval=FALSE}
+set.seed(1)
+ResulNuestro50.es1<-
+  bugs(data=datos.es.asc,inits=inicial.es,
+       parameters=parametros,model=modeloNuestro,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs)
+
+save(ResulNuestro50.es1, file="ResulNuestro50.es1.Rdata")
+```
+
+### PAR en JAGS
+
+```{r,eval=FALSE}
+inicialj.es <- function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(dataes)[1],0,1),
+       sp= c( rnorm(56,0,1)),
+       sdsp=runif(1),sdhet=runif(1)
+  )
+}
+
+datosj.es.asc <- list(O=data.orden.es$cases, E=data.orden.es$expected,
+                      n=dim(data.orden.es)[1],
+                      adj=adj.asc.es, nadj=length(adj.asc.es),
+                      index=indexp.asc.es,num=num.asc.es,cero=0)
+```
+
+```{r,eval=FALSE}
+set.seed(1)
+Resuljags50_es1<-jags(data=datosj.es.asc,
+                    inits=inicialj.es,
+                    parameters=parametros,
+                    model="ModeloNuestro_jags.txt", 
+                    n.chain=3,n.iter=10000,n.burnin=1000)
+save(Resuljags50_es1, file="Resuljags50_es1.Rdata")
+```
+
+# Cargar modelos si ya están guardados
+
+```{r}
+load("Resuljags50_es1.Rdata")
+load("ResulBYM50.es1.Rdata")
+load("ResulNuestro50.es1.Rdata")
+```
+
+## 4.2 CORRELACION, CONVERGENCIA Y MAPAS EN ESCOCIA
+
+### Correlación
+
+```{r, eval=FALSE}
+corES <- 
+  as.data.frame(cbind(BYM=ResulBYM50.es1$mean$R,
+                             ASC=ResulNuestro50.es1$mean$R,
+                             JAGS=Resuljags50_es1[["mean"]][["R"]]))
+cor_es <- xtable(cor(corES),digits = 3)
+print(cor_es, include.rownames = TRUE,digits = NULL)
+```
+
+\begin{table}[H]
+\centering
+\begin{tabular}{cccc}
+  \hline
+ & \textbf{BYM} & \textbf{ASC W} & \textbf{ASC J} \\ 
+  \hline 
+\textbf{BYM} & 1.00 & 0.999 & 0.999 \\ 
+\textbf{ASC W} & 0.999 & 1.00 & 0.999\\ 
+\textbf{ASC J} & 0.999 & 0.999 & 1.00 \\ 
+   \hline
+\end{tabular}
+\caption{\textit{Correlación de los modelos BYM, ASC W y ASC J  con los datos de Escocia}}
+\label{tab:CorEs}
+\end{table}
+
+### Convergencia
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{ccc}
+        \hline
+        \textbf{Modelo} & \textbf{R hat} & \textbf{n.eff} \\ 
+        \hline
+        \textbf{BYM} & 1 & 650 \\ 
+        \textbf{ASC W} & 1 & 1200 \\ 
+        \textbf{ASC J} & 1 & 1145 \\ 
+        \hline
+    \end{tabular}
+    \caption{\textit{Convergencia de los modelos BYM, ASC W y ASC J con los datos de Escocia. \textit{\textbf{Rhat}}: media de los Rhat; \textit{\textbf{n.eff}}, el mínimo de cadenas que han convergido.}}
+    \label{tab:ConEs}
+\end{table}
+
+### Mapas
+
+```{r}
+# Paleta de colores
+SMR_cutoff <- c(0.34, 0.7, 1.0, 1.5, 2.5, 3, 4.7)
+paleta <- brewer.pal(length(SMR_cutoff) + 1, "Oranges")
+```
+
+```{r}
+par(mar = c(4, 4, 4, 4) + 0.1)  # Ajustar los márgenes
+plot(mapes.orden,
+     col = paleta[as.numeric(cut(ResulBYM50.es1[["mean"]][["R"]],
+                                SMR_cutoff))],
+     ylab = expression(bold("FULL")),
+     cex.main = 1.1, lwd = 0.1)
+
+legend("bottomright",
+       legend = paste(c("< 0.70","0.70-0.99","1.00-1.49",
+                        "1.50-2.49","2.50.-2.99","> 3.00")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)  # Ajustar el tamaño de la leyenda
+
+
+par(mar = c(4, 4, 4, 4) + 0.1) 
+plot(mapes.orden,
+col = paleta[as.numeric(cut(ResulNuestro50.es1[["mean"]][["R"]],
+SMR_cutoff))],
+ylab = expression(bold("PAR W")),
+cex.main=1.1, lwd=0.1)
+legend("bottomright", 
+       legend = paste(c("< 0.70","0.70-0.99","1.00-1.49",
+                        "1.50-2.49","2.50.-2.99","> 3.00")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+
+
+par(mar = c(4, 4, 4, 4) + 0.1)  # Ajustar los márgenes
+plot(mapes.orden,
+     col = paleta[as.numeric(cut(Resuljags50_es1[["mean"]][["R"]],
+                                SMR_cutoff))],
+     ylab = expression(bold("PAR J")),
+     cex.main = 1.1, lwd = 0.1)
+
+legend("bottomright",
+       legend = paste(c("< 0.70","0.70-0.99","1.00-1.49",
+                        "1.50-2.49","2.50.-2.99","> 3.00")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+
+```
+
+# 5. DATOS ARAGON
+### Ordenación con semilla 50
+
+```{r}
+set.seed(50)
+border<-sample(1:(dim(datar)[1]),1)
+orden<-border
+newborder<-0
+while(!is.null(newborder)){
+newborder<-sort(unique(
+  unlist(sapply(border,function(x){nb2ar[[x]]}))))
+newborder<-newborder[!(newborder%in%orden)]
+orden<-c(orden,newborder)
+border<-newborder
+}
+ordenpo <-orden
+mapar.orden <- maparg[rev(orden), ]
+mapar.ordenpo <-mapar.orden
+nbar.orden<-spdep::poly2nb(mapar.orden)
+```
+
+```{r}
+nbar.orden.asc<- vsup(nbar.orden)
+nbar.orden.asc[[729]]<-as.integer(729)
+```
+
+```{r}
+numBYMar<-sapply(nbar.orden,length) 
+adjBYMar<-unlist(nbar.orden) 
+indexBYMar <- cumsum(sapply(nbar.orden, length)) 
+indexpBYMar <- c(0, unique(indexBYMar))
+
+num.asc.ar<-sapply(nbar.orden.asc,length) 
+num.asc.ar[num.asc.ar==0]<-0.001 
+adj.asc.ar<-unlist(nbar.orden.asc) 
+index.asc.ar <- cumsum(sapply(nbar.orden.asc, length)) 
+indexp.asc.ar <- c(0, unique(index.asc.ar))
+```
+
+```{r}
+data.orden.ar <-
+  datar[match(mapar.orden@data$CODMUNI,datar$CODMUNI),]
+data.orden.ar1 <- data.orden.ar
+```
+
+## 5.1 MODELOS en ARAGÓN
+### FULL en Winbugs
+
+```{r,eval=FALSE}
+datos.ar<-
+  list(O=data.orden.ar$O,E=data.orden.ar$E, 
+       n=dim(datar)[1], adj=adjBYMar,
+       nadj=length(adjBYMar), index=indexpBYMar,
+       num=numBYMar,cero=0)
+
+inicial.ar<-function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp=rnorm(dim(datar)[1],0,1),
+       sdsp=runif(1), sdhet=runif(1)
+  )
+}
+```
+
+```{r,eval=FALSE}
+set.seed(1)
+ResulBYM50.ar1<-
+  bugs(data=datos.ar,inits=inicial.ar,
+       parameters=parametros,model=modeloBYM,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs)
+
+save(ResulBYM50.ar1, file="ResulBYM50.ar1.Rdata")
+```
+
+### PAR en Winbugs
+
+```{r,eval=FALSE}
+datos.ar.asc<-
+  list(O=data.orden.ar$O, E=data.orden.ar$E,
+       n=dim(data.orden.ar)[1], adj=adj.asc.ar, 
+       nadj=length(adj.asc.ar), index=indexp.asc.ar,
+       num=num.asc.ar,cero=0)
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+ResulNuestro50.ar1<-
+  bugs(data=datos.ar.asc,inits=inicial.ar,
+       parameters=parametros,model=modeloNuestro,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time
+
+save(ResulNuestro50.ar1, file="ResulNuestro50.ar1.Rdata")
+```
+
+### PAR en JAGS
+
+```{r,eval=FALSE}
+inicialj.ar <- function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp=rnorm(729,0,1),
+       sdsp=runif(1),sdhet=runif(1)
+  )
+}
+
+datosj.ar.asc <- list(O=data.orden.ar$O, E=data.orden.ar$E,
+                    n=dim(data.orden.ar)[1],
+                    adj=adj.asc.ar, nadj=length(adj.asc.ar),
+                    index=indexp.asc.ar,num=num.asc.ar,
+                    cero=0)
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+Resuljags50_ar1<-jags(data=datosj.ar.asc,
+                    inits=inicialj.ar,
+                    parameters=parametros,
+                    model="ModeloNuestro_jags.txt", 
+                    n.chain=3,n.iter=10000,n.burnin=1000)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time
+save(Resuljags50_ar1, file="Resuljags50_ar1.Rdata")
+```
+
+```{r}
+load("Resuljags50_ar1.Rdata")
+load("ResulBYM50.ar1.Rdata")
+load("ResulNuestro50.ar1.Rdata")
+```
+
+## 5.2 CORRELACION, CONVERGENCIA Y MAPAS EN ARAGÓN
+
+### Correlación
+
+```{r,eval=FALSE}
+corAR <- 
+  as.data.frame(cbind(BYM=ResulBYM50.ar1$mean$R,
+                             ASC=ResulNuestro50.ar1$mean$R,
+                             JAGS=Resuljags50_ar1[["mean"]][["R"]]))
+
+cor_ar <- xtable(round(cor(corAR),3))
+print(cor_ar, include.rownames = TRUE)
+```
+
+\begin{table}[H]
+\centering
+\begin{tabular}{cccc}
+  \hline
+ & \textbf{BYM} & \textbf{ASC W} & \textbf{ASC J} \\ 
+  \hline
+ \textbf{BYM} & 1.00 & 0.948 & 0.952 \\ 
+ \textbf{ASC W} & 0.948 & 1.00 & 0.999 \\ 
+ \textbf{ASC J} & 0.952 & 0.999 & 1.00 \\ 
+   \hline
+\end{tabular}
+\caption{\textit{Correlación de los modelos BYM ,ASC W y ASC J con los datos de Aragón.}}
+\label{tab:CorAr}
+\end{table}
+
+### Convergencia
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{ccc}
+        \hline
+        \textbf{Modelo} & \textbf{R hat} & \textbf{n.eff} \\ 
+        \hline
+        \textbf{BYM} & 1 & 270 \\ 
+        \textbf{ASC W} & 1 & 130 \\ 
+        \textbf{ASC J} & 1 & 97 \\ 
+        \hline
+    \end{tabular}
+    \caption{\textit{Convergencia de los modelos BYM, ASC W y ASC J con lsod atos de Aragón.  \textit{\textbf{Rhat}}: media de los Rhat; \textit{\textbf{n.eff}}, el minimo de cadenas que han convergido.}}
+    \label{tab:ConAr}
+\end{table}
+
+### Mapas
+
+```{r}
+# Paleta de colores
+SMR_cutoff <- c(0.5, 0.8, 0.9, 1.0, 1.1, 1.2, 1.8)
+paleta <- brewer.pal(length(SMR_cutoff) + 1, "Oranges")
+```
+
+```{r}
+par(mar = c(4, 4, 4, 4) + 0.1) 
+plot(mapar.orden,
+col = paleta[as.numeric(cut(ResulBYM50.ar1[["mean"]][["R"]],
+SMR_cutoff))],
+ylab = expression(bold("FULL")),
+cex.main=1.1,
+ylim=c(4413136, 4740000),
+xlim=c(569301, 800000), lwd=0.1)
+legend("bottomright", 
+       legend = paste(c("< 0.80","0.80-0.89","0.90-0.99",
+                        "1.00-1.09","1.10-1.19","> 1.20")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+
+
+par(mar = c(4, 4, 4, 4) + 0.1) 
+plot(mapar.orden,
+col = paleta[as.numeric(cut(ResulNuestro50.ar1[["mean"]][["R"]],
+SMR_cutoff))],
+ylab = expression(bold("PAR W")),
+cex.main=1.1,
+ylim=c(4413136, 4740000),
+xlim=c(569301, 800000), lwd=0.1)
+legend("bottomright", 
+       legend = paste(c("< 0.80","0.80-0.89","0.90-0.99",
+                        "1.00-1.09","1.10-1.19","> 1.20")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+
+
+plot(mapar.orden,
+col = paleta[as.numeric(cut(Resuljags50_ar1[["mean"]][["R"]],
+SMR_cutoff))],
+ylab = expression(bold("PAR J")),
+cex.main=1.1,
+ylim=c(4413136, 4740000),
+xlim=c(569301, 800000), lwd=0.1)
+legend("bottomright", 
+       legend = paste(c("< 0.80","0.80-0.89","0.90-0.99",
+                        "1.00-1.09","1.10-1.19","> 1.20")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+```
+
+# 6. DATOS MEDEA (VALENCIA)
+### Ordenación con semilla 50
+
+```{r}
+set.seed(50)
+border<-sample(1:(dim(datam)[1]),1)
+orden<-border
+newborder<-0
+while(!is.null(newborder)){
+newborder<-sort(unique(unlist(sapply(border,function(x){nb2me[[x]]}))))
+newborder<-newborder[!(newborder%in%orden)]
+orden<-c(orden,newborder)
+border<-newborder
+}
+
+mapme.orden <- medeamap[rev(orden), ]
+nbme.orden<-spdep::poly2nb(mapme.orden)
+```
+
+```{r}
+nbme.orden.asc<- vsup(nbme.orden)
+nbme.orden.asc[[531]]<-as.integer(531)
+```
+
+```{r}
+numBYMme<-sapply(nbme.orden,length) 
+adjBYMme<-unlist(nbme.orden) 
+indexBYMme <- cumsum(sapply(nbme.orden, length)) 
+indexpBYMme <- c(0, unique(indexBYMme))
+
+num.asc.me<-sapply(nbme.orden.asc,length) 
+num.asc.me[num.asc.me==0]<-0.001 
+adj.asc.me<-unlist(nbme.orden.asc) 
+index.asc.me <- cumsum(sapply(nbme.orden.asc, length)) 
+indexp.asc.me <- c(0, unique(index.asc.me))
+```
+
+```{r}
+data.orden.me<-datam[match(mapme.orden@data$seccion,rownames(datam)),]
+```
+
+## 5.1 MODELOS EN MEDEA
+### FULL en Winbugs
+
+```{r,eval=FALSE}
+datos.me<-
+  list(O=data.orden.me$O,E=data.orden.me$E, 
+       n=dim(datam)[1], adj=adjBYMme,
+       nadj=length(adjBYMme), index=indexpBYMme,
+       num=numBYMme,cero=0)
+
+inicial.me<-function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datam)[1],0,1),
+       sp=rnorm(dim(datam)[1],0,1),
+       sdsp=runif(1), sdhet=runif(1)
+  )
+}
+```
+
+```{r,eval=FALSE}
+set.seed(1)
+ResulBYM50.me1.t<-system.time(ResulBYM50.me1<-
+  bugs(data=datos.me,inits=inicial.me,
+       parameters=parametros,model=modeloBYM,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs))
+
+save(ResulBYM50.me1, file="ResulBYM50.me1.Rdata")
+```
+
+### PAR en Winbugs
+
+```{r,eval=FALSE}
+datos.me.asc<-
+  list(O=data.orden.me$O, E=data.orden.me$E,
+       n=dim(data.orden.me)[1], adj=adj.asc.me, 
+       nadj=length(adj.asc.me), index=indexp.asc.me,
+       num=num.asc.me,cero=0)
+```
+
+```{r,eval=FALSE}
+set.seed(1)
+ResulNuestro50.me1<-
+  bugs(data=datos.me.asc,inits=inicial.me,
+       parameters=parametros,model=modeloNuestro,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs)
+
+save(ResulNuestro50.me1, file="ResulNuestro50.me1.Rdata")
+```
+
+### PAR en JAGS
+
+```{r,eval=FALSE}
+inicialj.me <- function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datam)[1],0,1),
+       sp= rnorm(531,0,1),
+       sdsp=runif(1),sdhet=runif(1)
+  )
+}
+
+datosj.me.asc <- list(O=data.orden.me$O, E=data.orden.me$E,
+                    n=dim(data.orden.me)[1],
+                    adj=adj.asc.me, nadj=length(adj.asc.me),
+                    index=indexp.asc.me,num=num.asc.me,
+                    cero=0)
+```
+
+```{r,eval=FALSE}
+set.seed(1)
+Resuljags50_me1<-jags(data=datosj.me.asc,
+                    inits=inicialj.me,
+                    parameters=parametros,
+                    model="ModeloNuestro_jags.txt", 
+                    n.chain=3,n.iter=10000,n.burnin=1000)
+save(Resuljags50_me1, file="Resuljags50_me1.Rdata")
+```
+
+```{r}
+load("Resuljags50_me1.Rdata")
+load("ResulBYM50.me1.Rdata")
+load("ResulNuestro50.me1.Rdata")
+```
+
+## 5. 2 CORRELACION, CONVERGENCIA Y MAPAS EN MEDEA
+
+### Correlación
+
+```{r,eval=FALSE}
+corME <- 
+  as.data.frame(cbind(BYM=ResulBYM50.me1$mean$R,
+                             ASC=ResulNuestro50.me1$mean$R,
+                             JAGS=Resuljags50_me1[["mean"]][["R"]]))
+
+cor_me <- xtable(round(cor(corME),3))
+```
+
+\begin{table}[H]
+\centering
+\begin{tabular}{cccc}
+  \hline
+ & \textbf{BYM} & \textbf{ASC W} & \textbf{ASC J} \\ 
+  \hline
+\textbf{BYM} & 1.00 & 0.980 & 0.979 \\ 
+\textbf{ASC W} & 0.980 & 1.00 & 0.999 \\ 
+\textbf{ASC J} & 0.979 & 0.999 & 1.00 \\ 
+   \hline
+\end{tabular}
+\caption{\textit{Correlación de los modelos BYM, ASC W y ASC J con los datos de MEDEA.}}
+\label{tab:CorMe}
+\end{table}
+
+## Convergencia
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{ccc}
+        \hline
+        \textbf{Modelo} & \textbf{R hat} & \textbf{n.eff} \\ 
+        \hline
+        \textbf{BYM} & 1 & 280 \\ 
+        \textbf{ASC W} & 1 & 150 \\ 
+        \textbf{ASC J} & 1 & 84 \\
+        \hline
+    \end{tabular}
+    \caption{\textit{Convergencia de los modelos MEDEA. \textit{\textbf{Rhat}}: media de los Rhat; \textit{\textbf{n.eff}}, el minimo de cadenas que han convergido. }}
+    \label{tab:ConMe}
+\end{table}
+
+### Mapas
+
+```{r}
+# Paleta de colores
+SMR_cutoff <- c(0.5, 0.8, 0.9, 1.0, 1.1, 1.2, 1.8)
+paleta <- brewer.pal(length(SMR_cutoff) + 1, "Oranges")
+```
+
+```{r}
+par(mar = c(4, 4, 4, 4) + 0.1)
+plot(mapme.orden,
+col = paleta[as.numeric(cut(ResulBYM50.me1[["mean"]][["R"]],
+SMR_cutoff))],ylim=c(39.46, 39.465), xlim=c(-0.4288, -0.29535),
+ylab = expression(bold("FULL")),
+cex.main=1.1, lwd=0.1)
+legend("topright", 
+       legend = paste(c("< 0.80","0.80-0.89","0.90-0.99",
+                        "1.00-1.09","1.10-1.19","> 1.20")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+
+par(mar = c(4, 4, 4, 4) + 0.1)
+plot(mapme.orden,
+col = paleta[as.numeric(cut(ResulNuestro50.me1[["mean"]][["R"]],
+SMR_cutoff))],
+ylab = expression(bold("PAR W")),ylim=c(39.46, 39.465), xlim=c(-0.4288, -0.29535),
+cex.main=1.1, lwd=0.1)
+legend("topright", 
+       legend = paste(c("< 0.80","0.80-0.89","0.90-0.99",
+                        "1.00-1.09","1.10-1.19","> 1.20")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+
+par(mar = c(4, 4, 4, 4) + 0.1)
+plot(mapme.orden,
+col = paleta[as.numeric(cut(Resuljags50_me1[["mean"]][["R"]],
+SMR_cutoff))],
+ylab = expression(bold("PAR J")),ylim=c(39.46, 39.465), xlim=c(-0.4288, -0.29535),
+cex.main=1.1, lwd=0.1)
+legend("topright", 
+       legend = paste(c("< 0.80","0.80-0.89","0.90-0.99",
+                        "1.00-1.09","1.10-1.19","> 1.20")), 
+       fill = paleta,
+       cex = 0.8, y.intersp = 1.5)
+```
+
+# 6. IMPORTANCIA DE LA ORDENACIÓN
+
+### Ordenación con Veguilla de la sierra- Biescas (Segunda ordenacion)
+
+```{r}
+# Nodo de inicio biescas
+border<-50
+orden<-border
+newborder<-0
+while(!is.null(newborder)){
+newborder<-sort(unique(
+  unlist(sapply(border,function(x){nb2ar[[x]]}))))
+newborder<-newborder[!(newborder%in%orden)]
+orden<-c(orden,newborder)
+border<-newborder
+}
+ordenbi <-orden
+mapar.orden <- maparg[rev(orden), ]
+mapar.ordenbi <- mapar.orden
+nbar.orden<-spdep::poly2nb(mapar.orden)
+```
+
+```{r}
+nbar.orden.asc<- vsup(nbar.orden)
+nbar.orden.asc[[729]]<-as.integer(729)
+```
+
+```{r}
+numBYMar<-sapply(nbar.orden,length) 
+adjBYMar<-unlist(nbar.orden) 
+indexBYMar <- cumsum(sapply(nbar.orden, length)) 
+indexpBYMar <- c(0, unique(indexBYMar))
+
+num.asc.ar<-sapply(nbar.orden.asc,length) 
+num.asc.ar[num.asc.ar==0]<-0.001 
+adj.asc.ar<-unlist(nbar.orden.asc) 
+index.asc.ar <- cumsum(sapply(nbar.orden.asc, length)) 
+indexp.asc.ar <- c(0, unique(index.asc.ar))
+```
+
+```{r}
+data.orden.ar <-
+  datar[match(mapar.orden@data$CODMUNI,datar$CODMUNI),]
+data.orden.ar2 <- data.orden.ar
+```
+
+* Winbugs
+
+```{r,eval=FALSE}
+datos.ar.asc<-
+  list(O=data.orden.ar$O, E=data.orden.ar$E,
+       n=dim(data.orden.ar)[1], adj=adj.asc.ar, 
+       nadj=length(adj.asc.ar), index=indexp.asc.ar,
+       num=num.asc.ar,cero=0)
+
+inicial.ar<-function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp=rnorm(dim(datar)[1],0,1),
+       sdsp=runif(1), sdhet=runif(1)
+  )
+}
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+ResulNuestroBI.ar1<-
+  bugs(data=datos.ar.asc,inits=inicial.ar,
+       parameters=parametros,model=modeloNuestro,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time # 6 min y 45 seg
+save(ResulNuestroBI.ar1, file="ResulNuestroBI.ar1.Rdata")
+```
+
+* JAGS
+
+```{r,eval=FALSE}
+inicialj.ar <- function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp= rnorm(729,0,1),
+       sdsp=runif(1),sdhet=runif(1)
+  )
+}
+
+datosj.ar.asc <- list(O=data.orden.ar$O, E=data.orden.ar$E,
+                    n=dim(data.orden.ar)[1],
+                    adj=adj.asc.ar, nadj=length(adj.asc.ar),
+                    index=indexp.asc.ar,num=num.asc.ar,
+                    cero=0)
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+ResuljagsBI_ar1<-jags(data=datosj.ar.asc,
+                    inits=inicialj.ar,
+                    parameters=parametros,
+                    model="ModeloNuestro_jags.txt", 
+                    n.chain=3,n.iter=10000,n.burnin=1000)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time # 5 min y 48 seg
+save(ResuljagsBI_ar1, file="ResuljagsBI_ar1.Rdata")
+```
+
+### Ordenación con Sopeira- Bordalba (Tercera ordenacion)
+
+```{r}
+# Nodo de inicio bordalba
+border<-491
+orden<-border
+newborder<-0
+while(!is.null(newborder)){
+newborder<-sort(unique(
+  unlist(sapply(border,function(x){nb2ar[[x]]}))))
+newborder<-newborder[!(newborder%in%orden)]
+orden<-c(orden,newborder)
+border<-newborder
+}
+ordenbo <- orden
+mapar.orden <- maparg[rev(orden), ]
+mapar.ordenbo <- mapar.orden
+nbar.orden<-spdep::poly2nb(mapar.orden)
+```
+
+```{r}
+nbar.orden.asc<- vsup(nbar.orden)
+nbar.orden.asc[[729]]<-as.integer(729)
+```
+
+```{r}
+numBYMar<-sapply(nbar.orden,length) 
+adjBYMar<-unlist(nbar.orden) 
+indexBYMar <- cumsum(sapply(nbar.orden, length)) 
+indexpBYMar <- c(0, unique(indexBYMar))
+
+num.asc.ar<-sapply(nbar.orden.asc,length) 
+num.asc.ar[num.asc.ar==0]<-0.001 
+adj.asc.ar<-unlist(nbar.orden.asc) 
+index.asc.ar <- cumsum(sapply(nbar.orden.asc, length)) 
+indexp.asc.ar <- c(0, unique(index.asc.ar))
+```
+
+```{r}
+data.orden.ar <-
+  datar[match(mapar.orden@data$CODMUNI,datar$CODMUNI),]
+data.orden.ar3 <-data.orden.ar
+```
+
+* Winbugs
+
+```{r,eval=FALSE}
+datos.ar.asc<-
+  list(O=data.orden.ar$O, E=data.orden.ar$E,
+       n=dim(data.orden.ar)[1], adj=adj.asc.ar, 
+       nadj=length(adj.asc.ar), index=indexp.asc.ar,
+       num=num.asc.ar,cero=0)
+
+inicial.ar<-function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp=rnorm(dim(datar)[1],0,1),
+       sdsp=runif(1), sdhet=runif(1)
+  )
+}
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+ResulNuestroBO.ar1<-
+  bugs(data=datos.ar.asc,inits=inicial.ar,
+       parameters=parametros,model=modeloNuestro,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time
+save(ResulNuestroBO.ar1, file="ResulNuestroBO.ar1.Rdata")
+```
+
+* JAGS
+
+```{r,eval=FALSE}
+inicialj.ar <- function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp= rnorm(729,0,1),
+       sdsp=runif(1),sdhet=runif(1)
+  )
+}
+
+datosj.ar.asc <- list(O=data.orden.ar$O, E=data.orden.ar$E,
+                    n=dim(data.orden.ar)[1],
+                    adj=adj.asc.ar, nadj=length(adj.asc.ar),
+                    index=indexp.asc.ar,num=num.asc.ar,
+                    cero=0)
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+ResuljagsBO_ar1<-jags(data=datosj.ar.asc,
+                    inits=inicialj.ar,
+                    parameters=parametros,
+                    model="ModeloNuestro_jags.txt", 
+                    n.chain=3,n.iter=10000,n.burnin=1000)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time
+save(ResuljagsBO_ar1, file="ResuljagsBO_ar1.Rdata")
+```
+
+### Zaragoza último
+
+```{r}
+# Nodo de inicio Zaragoza
+border<-727
+orden<-border
+newborder<-0
+while(!is.null(newborder)){
+newborder<-sort(unique(
+  unlist(sapply(border,function(x){nb2ar[[x]]}))))
+newborder<-newborder[!(newborder%in%orden)]
+orden<-c(orden,newborder)
+border<-newborder
+}
+ordenza <- orden
+mapar.orden <- maparg[rev(orden), ]
+mapar.ordenza <- mapar.orden
+nbar.orden<-spdep::poly2nb(mapar.orden)
+```
+
+```{r}
+nbar.orden.asc<- vsup(nbar.orden)
+nbar.orden.asc[[729]]<-as.integer(729)
+```
+
+```{r}
+numBYMar<-sapply(nbar.orden,length) 
+adjBYMar<-unlist(nbar.orden) 
+indexBYMar <- cumsum(sapply(nbar.orden, length)) 
+indexpBYMar <- c(0, unique(indexBYMar))
+
+num.asc.ar<-sapply(nbar.orden.asc,length) 
+num.asc.ar[num.asc.ar==0]<-0.001 
+adj.asc.ar<-unlist(nbar.orden.asc) 
+index.asc.ar <- cumsum(sapply(nbar.orden.asc, length)) 
+indexp.asc.ar <- c(0, unique(index.asc.ar))
+```
+
+```{r}
+data.orden.ar <-
+  datar[match(mapar.orden@data$CODMUNI,datar$CODMUNI),]
+data.orden.ar4 <-data.orden.ar
+```
+
+### Mapa para la parte de ordenación
+
+```{r}
+#mapas
+par(mfrow=c(2,2))
+
+#Pozondo
+orden_posicionespo <- seq(0, 255, length.out = length(ordenpo))
+plot(mapar.ordenpo, col = rgb(red = orden_posicionespo, green = 0, blue = 0, maxColorValue = 255))
+
+#bordalba
+orden_posicionesbo <- seq(0, 255, length.out = length(ordenbo))
+plot(mapar.ordenbo, col = rgb(red = orden_posicionesbo, green = 0, blue = 0, maxColorValue = 255))
+
+#Zaragoza
+orden_posicionesza <- seq(0, 255, length.out = length(ordenza))
+plot(mapar.ordenza, col = rgb(red = orden_posicionesza, green = 0, blue = 0, maxColorValue = 255))
+
+#Biescas
+orden_posicionesbi <- seq(0, 255, length.out = length(ordenbi))
+plot(mapar.ordenbi, col = rgb(red = orden_posicionesbi, green = 0, blue = 0, maxColorValue = 255))
+```
+
+* Winbugs
+
+```{r,eval=FALSE}
+datos.ar.asc<-
+  list(O=data.orden.ar$O, E=data.orden.ar$E,
+       n=dim(data.orden.ar)[1], adj=adj.asc.ar, 
+       nadj=length(adj.asc.ar), index=indexp.asc.ar,
+       num=num.asc.ar,cero=0)
+
+inicial.ar<-function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp=rnorm(dim(datar)[1],0,1),
+       sdsp=runif(1), sdhet=runif(1)
+  )
+}
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+ResulNuestroZA.ar1<-
+  bugs(data=datos.ar.asc,inits=inicial.ar,
+       parameters=parametros,model=modeloNuestro,
+       n.iter=10000,n.burnin=1000,n.thin=1,
+       DIC=FALSE,bugs.directory=directorio.winbugs)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time
+save(ResulNuestroZA.ar1, file="ResulNuestroZA.ar1.Rdata")
+```
+
+* JAGS
+
+```{r,eval=FALSE}
+inicialj.ar <- function(){
+  list(m=rnorm(1,0,1),het=rnorm(dim(datar)[1],0,1),
+       sp= rnorm(729,0,1),
+       sdsp=runif(1),sdhet=runif(1)
+  )
+}
+
+datosj.ar.asc <- list(O=data.orden.ar$O, E=data.orden.ar$E,
+                    n=dim(data.orden.ar)[1],
+                    adj=adj.asc.ar, nadj=length(adj.asc.ar),
+                    index=indexp.asc.ar,num=num.asc.ar,
+                    cero=0)
+```
+
+```{r,eval=FALSE}
+start_time <- proc.time()
+set.seed(1)
+ResuljagsZA_ar1<-jags(data=datosj.ar.asc,
+                    inits=inicialj.ar,
+                    parameters=parametros,
+                    model="ModeloNuestro_jags.txt", 
+                    n.chain=3,n.iter=10000,n.burnin=1000)
+end_time <- proc.time()
+elapsed_time <- end_time - start_time
+save(ResuljagsZA_ar1, file="ResuljagsZA_ar1.Rdata")
+```
+
+```{r}
+load("ResulNuestroBO.ar1.Rdata")
+load("ResulNuestroBI.ar1.Rdata")
+load("ResulNuestroZA.ar1.Rdata")
+load("ResuljagsBI_ar1.Rdata")
+load("ResuljagsBO_ar1.Rdata")
+load("ResuljagsZA_ar1.Rdata")
+```
+
+* Correlación
+
+```{r}
+a <- cbind(PARPOW=ResulNuestro50.ar1$mean$R,PARPOJ=Resuljags50_ar1[["mean"]][["R"]],ID=rownames(data.orden.ar1))
+b <- cbind(PARBIW=ResulNuestroBI.ar1$mean$R,PARBIJ=ResuljagsBI_ar1[["mean"]][["R"]],ID=rownames(data.orden.ar2))
+c <- cbind(PARBOW=ResulNuestroBO.ar1$mean$R,PARBOJ=ResuljagsBO_ar1[["mean"]][["R"]],ID=rownames(data.orden.ar3))
+d <- cbind(BYM=ResulBYM50.ar1$mean$R,ID=rownames(data.orden.ar1))
+e <- cbind(PARZW=ResulNuestroZA.ar1$mean$R,PARZJ=ResuljagsZA_ar1[["mean"]][["R"]],ID=rownames(data.orden.ar4))
+o1 <- merge (a,b,by="ID")
+o2 <- merge (o1,c,by="ID")
+o2 <- merge (d,o2,by="ID")
+o2 <- merge (o2, e,by="ID")
+o2 <- o2[,-1]
+o2 <- as.data.frame(lapply(o2, as.numeric))
+cor(o2)
+```
+
+\begin{table}[ht]
+\centering
+ \begin{adjustbox}{width = 6in, totalheight = 6in, center}
+\begin{tabular}{cccccccccc}
+  \hline
+ & \textbf{BYM} & \textbf{PAR PO W} & \textbf{PAR PO J} & \textbf{PAR BI W} & \textbf{PAR BI J} & \textbf{PAR BO W} & \textbf{PAR BO J} & \textbf{PAR ZA W} & \textbf{PAR ZAJ} \\ 
+  \hline
+  \textbf{BYM} & 1.000 & 0.948 & 0.952 & 0.963 & 0.958 & 0.960 & 0.963 & 0.964 & 0.964\\ 
+ \textbf{ ASC1W} & 0.948 & 1.000 & 0.999 & 0.936 & 0.931 & 0.944 & 0.939 & 0.952 & 0.946\\ 
+  \textbf{ASC1J} & 0.952 & 0.998 & 1.000 & 0.939 & 0.934 & 0.945 & 0.941 & 0.956 & 0.951\\ 
+  \textbf{ASC2W} & 0.963 & 0.936 & 0.939 & 1.000 & 0.997 & 0.922 & 0.919 &0.960 & 0.962\\ 
+  \textbf{ASC2J} & 0.958 & 0.931 & 0.934 & 0.997 & 1.000 & 0.920 & 0.916 & 0.959 & 0.962\\ 
+  \textbf{ASC3W} & 0.90 & 0.944 & 0.945 & 0.922 & 0.920 & 1.000 & 0.996 & 0.964 & 0.962\\ 
+ \textbf{ASC3J} & 0.963 & 0.939 & 0.941 & 0.919 & 0.916 & 0.996 & 1.000 & 0.965 & 0.961\\ 
+  \textbf{ASC3ZW} & 0.964 & 0.952 & 0.956 & 0.960 & 0.958 & 0.965 & 0.970 & 1.000 & 0.997 \\ 
+   \textbf{ASC3ZJ} & 0.964 & 0.946 & 0.951 & 0.962 & 0.963 & 0.962 & 0.961 & 0.997 & 1.000 \\ 
+   \hline
+\end{tabular}
+\end{adjustbox}
+\caption{\textit{Correlación del modelo BYM con los tres modelos de los tres patrones diferentes, asi como con el modelo con Zaragoza como ultimo municipio en Winbugs y JAGS. }}
+\label{tab:CorOr}
+\end{table}
+
+* Convergencia
+
+\begin{table}[H]
+\centering
+\begin{tabular}{cccc}
+  \hline
+ & \texttt{Rhat} & \texttt{n.eff} \\ 
+  \hline
+  \textbf{PAR PO W} & 1.00 & 130 \\ 
+  \textbf{PAR PO J} & 1.00 & 97 \\ 
+  \textbf{PAR BI W} & 1.00 & 56  \\ 
+  \textbf{PAR BI J} & 1.00 & 113 \\ 
+  \textbf{PAR BO W} & 1.00 & 33  \\ 
+  \textbf{PAR BO J} & 1.00 & 19  \\ 
+  \textbf{PAR ZA W} & 1.00 & 60  \\ 
+  \textbf{PAR ZA J} & 1.00 & 59 \\ 
+   \hline
+\end{tabular}
+\caption{Convergencia de los modelos con diferentes vectores de ordenación de Aragón en \texttt{WinBUGS} y \texttt{JAGS}.}
+\label{tab:ConOr}
+\end{table}
