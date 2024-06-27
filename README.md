@@ -4,8 +4,12 @@ En el siguiente repositorio encontrareis el código y los modelos utilizados en 
 
 ## Datos brutos
 
-Los datos y las cartrografias utilizadas para los casos prácticos no están disponibles en este repositorio, debido a que unicamente se ha permitido el uso de estas bases de datos para la ejecución de este trabajo. La única base de datos dispoinible de forma pública es la nombrada como "Escocia" y se encuentra en la carpeta "Datos".
+Los datos y las cartrografias utilizadas para los casos prácticos no están disponibles en este repositorio, debido a que unicamente se ha permitido el uso de estas bases de datos para la ejecución de este trabajo. La única base de datos dispoinible de forma pública es la nombrada como "Escocia". Se pueden abrir de la siguiente forma:
 
+```{r}
+library(SpatialEpi)
+data(scotland)
+```
 ## Código
 
 El código es el documento `CODIGO TFM.rmd´ y se puede ejecutar en orden. Para ejecutar los modelos del código es necesario tener descargada, además de R, los software JAGS y WinBUGS. Además, se debe tener en cuenta que cada uno de los modelos tarda unos 5-7 minutos en ejecutar.
