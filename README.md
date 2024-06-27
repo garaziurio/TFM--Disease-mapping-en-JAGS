@@ -1,10 +1,10 @@
 # Trabajo de Fin de Máster: Una formulacíon alternativa para la distribución ICAR
 
-En el siguiente repositorio encontrareis los datos, el código y los modelos utilizados en este trabajo. 
+En el siguiente repositorio encontrareis el código y los modelos utilizados en este trabajo. 
 
 ## Datos brutos
 
-Los datos y las cartrografias utilizadas para el caso práctico están en la carpeta `datos´. Es necesario descargar todos los documentos para poder ejecutar el código.
+Los datos y las cartrografias utilizadas para los casos prácticos no están disponibles en este repositorio, debido a que unicamente se ha permitido el uso de estas bases de datos para la ejecución de este trabajo. La única base de datos dispoinible de forma pública es la nombrada como "Escocia" y se encuentra en la carpeta "Datos".
 
 ## Código
 
